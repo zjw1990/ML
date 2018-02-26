@@ -5,59 +5,125 @@ Created on Thu Feb 22 13:26:21 2018
 @author: zhao
 """
 
+from __future__ import print_function,division
 import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+np.random.seed(0)
+num_epochs = 100
+total_series_length = 50000
+truncated_backprop_length = 15
+state_size = 4
+num_classes = 2
+echo_step = 3
+batch_size = 5
+num_batches = total_series_length//batch_size//truncated_backprop_length
 
 
-class RNN1:
-    def __init__(self, u, v, w):
-        self._u, self._v, self._w = np.asarray(u), np.asarray(v), np.asarray(w)
-        self._states = None
+def dataGeneration():
+    x = np.array(np.random.choice(2,total_series_length,p = [0.5,0.5]))
+    y = np.roll(x,echo_step)
+    y[0:echo_step] = 0
+    
+    
+    x = x.reshape((batch_size,-1))
+    y = y.reshape((batch_size,-1))
+    
+    return(x,y)
+    
+#every step backprop 15 series
+batchX_placeholder = tf.placeholder(tf.float32,[batch_size,truncated_backprop_length]) # [5,15]
+batchY_placeholder = tf.placeholder(tf.int32,[batch_size,truncated_backprop_length]) # [5,15]
+# hidden state init
+init_state = tf.placeholder(tf.float32,[batch_size,state_size]) # [5,4]
 
-    def activate(self, x):
-        return x
+# weight and bias in hidden state
+W = tf.Variable(np.random.rand(state_size+1,state_size),dtype=tf.float32)  #[5,4]
+b = tf.Variable(np.zeros((1,state_size)),dtype = tf.float32) #[1,4]
+# weight and bias in output state
+W2 = tf.Variable(np.random.rand(state_size,num_classes),dtype=tf.float32) #[4,2]
+b2 = tf.Variable(np.zeros((1,num_classes)),dtype = tf.float32) #[1,2]
 
-    def transform(self, x):
-        return x
+# Unpack columns    
+inputs_series = tf.unstack(batchX_placeholder, axis=1) # [15,5]
+labels_series = tf.unstack(batchY_placeholder, axis=1)  #[15,5]
 
-    def run(self, x):
-        output = []
-        x = np.atleast_2d(x)
-        self._states = np.zeros([len(x)+1, self._u.shape[0]])
-        for t, xt in enumerate(x):
-            self._states[t] = self.activate(
-                self._u.dot(xt) + self._w.dot(self._states[t-1])
-            )
-            output.append(self.transform(
-                self._v.dot(self._states[t]))
-            )
-        return np.array(output)
+# Forward_pass
+
+current_state = init_state
+state_series = []
+
+for current_input in inputs_series:
+    current_input = tf.reshape(current_input,[batch_size,1]) #[5,1]
+    input_and_state_concatenated = tf.concat([current_input,current_state],1) #[5,5]
+    next_state = tf.tanh(tf.matmul(input_and_state_concatenated,W)+b)
+    state_series.append(next_state)
+    current_state = next_state
+
+logits_series = [tf.matmul(state,W2)+b2 for state in state_series]
+predictions_series = [tf.nn.softmax(logits) for logits in logits_series]
+
+losses = [tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits,labels=labels) for logits,labels in zip(logits_series,labels_series)]
+total_loss = tf.reduce_mean(losses)
+train_step = tf.train.AdagradDAOptimizer(0.3).minimize(total_loss)
+
+def plot(loss_list,predictions_series,batchX,batchY):
+    # multi pictures subplot[a,b,c] 2 row 3 columns 1th place (up->down->left->right) 
+    plt.subplot(2,3,1)
+    plt.cla() #clear axis
+    plt.plot(loss_list)
+    
+    for batch_series_idx in range(5):
+        one_hot_output_series = np.array(predictions_series)[:,batch_series_idx,:]
+        single_output_series = np.array([(1 if out[0] < 0.5 else 0) for out in one_hot_output_series])
+        
+        plt.subplot(2,3,batch_series_idx+2)
+        plt.cla()
+        
+        plt.axis([0,truncated_backprop_length,0,2])
+        left_offset = range(truncated_backprop_length)
+        plt.bar(left_offset, batchX[batch_series_idx, :], width=1, color="blue")    
+        plt.bar(left_offset, batchY[batch_series_idx, :] * 0.5, width=1, color="red")    
+        plt.bar(left_offset, single_output_series * 0.3, width=1, color="green")  
+        
+        plt.draw()
+        plt.pause(0.0001)
 
 
-class RNN2(RNN1):
-    def activate(self, x):
-        return 1 / (1 + np.exp(-x))
+with tf.Session() as sess:    
+    sess.run(tf.initialize_all_variables())    
+    plt.ion()    
+    plt.figure()    
+    plt.show()    
+    loss_list = []  
+    for epoch_idx in range(num_epochs):
+        x,y = dataGeneration()
+        _current_state = np.zeros((batch_size,state_size))
+        print("New data, epoch", epoch_idx)    
+        for batch_idx in range(num_batches):    
+            start_idx = batch_idx * truncated_backprop_length    
+            end_idx = start_idx + truncated_backprop_length
+            
+            batchX = x[:,start_idx:end_idx]
+            batchY = y[:,start_idx:end_idx]
+            
+            _total_loss, _train_step, _current_state, _predictions_series = sess.run(
+                [total_loss, train_step, current_state, predictions_series],
+                feed_dict={
+                    batchX_placeholder:batchX,
+                    batchY_placeholder:batchY,
+                    init_state:_current_state
+                })
+            loss_list.append(_total_loss)
+            if batch_idx%100 == 0:
+                print("Step",batch_idx, "Loss", _total_loss)
+                plot(loss_list, _predictions_series, batchX, batchY)
 
-    def transform(self, x):
-        safe_exp = np.exp(x - np.max(x))
-        return safe_exp / np.sum(safe_exp)
-
-    def bptt(self, x, y):
-        x, y, T = np.asarray(x), np.asarray(y), len(y)
-        o = self.run(x)
-        dis = o - y
-        dv = dis.T.dot(self._states[:-1])
-        du = np.zeros_like(self._u)
-        dw = np.zeros_like(self._w)
-        for t in range(T-1, -1, -1):
-            ds = self._v.T.dot(dis[t])
-            for bptt_step in range(t, max(-1, t-10), -1):
-                du += np.outer(ds, x[bptt_step])
-                dw += np.outer(ds, self._states[bptt_step-1])
-                st = self._states[bptt_step-1]
-                ds = self._w.T.dot(ds) * st * (1 - st)
-        return du, dv, dw
-
-if __name__ == '__main__':
-    _T = 5
-    rnn = RNN1(np.eye(_T), np.eye(_T), np.eye(_T) * 2)
-    print(rnn.run(np.eye(_T)))
+plt.ioff()
+plt.show()
+        
+    
+    
+    
+    
+    
