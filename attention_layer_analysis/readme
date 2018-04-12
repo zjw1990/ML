@@ -1,0 +1,5 @@
+the forward for attention in torch tutorial
+
+there is sth different in torch_attention and attention showed in NMT by jointly learning to align adn translate
+1. the encoder is a single rnn, not biRnn/BiLstm
+2. the input of decoder is the [SOS,target], taget is [target,EOS]
